@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="SMS Relay Ayarları"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="24dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Backend URL"
+        android:textSize="14sp"
+        android:layout_marginBottom="4dp" />
+
+    <EditText
+        android:id="@+id/backendUrlEdit"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="https://kazasorgulama.com.tr"
+        android:inputType="textUri"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Hedef Numara (5664)"
+        android:textSize="14sp"
+        android:layout_marginBottom="4dp" />
+
+    <EditText
+        android:id="@+id/targetNumberEdit"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="5664"
+        android:inputType="phone"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Admin Telefon (Hata Bildirimi)"
+        android:textSize="14sp"
+        android:layout_marginBottom="4dp" />
+
+    <EditText
+        android:id="@+id/adminPhoneEdit"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="5551234567"
+        android:inputType="phone"
+        android:layout_marginBottom="24dp" />
+
+    <Switch
+        android:id="@+id/activeSwitch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="SMS Relay Aktif"
+        android:layout_marginBottom="24dp" />
+
+    <Button
+        android:id="@+id/saveButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Kaydet" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Zamanlama: 5664'e gönder → 20sn bekle → Kullanıcıya ilet → 10sn bekle → Sonraki sorgu"
+        android:textSize="12sp"
+        android:textColor="#666666"
+        android:layout_marginTop="24dp" />
+
+</LinearLayout>
