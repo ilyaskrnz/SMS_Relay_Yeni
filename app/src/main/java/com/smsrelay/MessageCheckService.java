@@ -34,18 +34,16 @@ public class MessageCheckService extends Service {
     private static final String CHANNEL_ID = "SMSRelayChannel";
     private static final int NOTIFICATION_ID = 1;
 
-    // Zamanlama sabitleri
-    private static final int CHECK_INTERVAL = 5000;         // Backend kontrol: 5 saniye
-    private static final int WAIT_FOR_REPLY = 20000;        // 5664 cevap bekleme: 20 saniye
-    private static final int WAIT_BETWEEN_QUERIES = 10000;  // Sorgular arası: 10 saniye
-    private static final int TIMEOUT = 60000;               // Timeout: 60 saniye
+    private static final int CHECK_INTERVAL = 5000;
+    private static final int WAIT_FOR_REPLY = 90000;
+    private static final int WAIT_BETWEEN_QUERIES = 30000;
+    private static final int TIMEOUT = 120000;
 
     private Handler handler;
     private Runnable checkMessagesRunnable;
     private boolean isRunning = false;
-    private boolean isProcessingQuery = false;
+    public static boolean isProcessingQuery = false;
 
-    // Mevcut işlenen sorgu bilgisi
     public static String currentQueryId = null;
     public static String currentUserPhone = null;
     public static String currentVehicleId = null;
@@ -78,6 +76,24 @@ public class MessageCheckService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // SmsReceiver'dan gelen "işlem tamamlandı" sinyali
+        if (intent != null && "QUERY_COMPLETED".equals(intent.getAction())) {
+            Log.d(TAG, "SmsReceiver'dan sinyal alındı - işlem tamamlandı");
+            responseReceived = true;
+            receivedResponse = intent.getStringExtra("response");
+
+            updateNotification("Sonuç gönderildi: " + currentVehicleId);
+
+            // Temizle
+            clearCurrentQuery();
+            isProcessingQuery = false;
+
+            // 30 saniye sonra sonraki sorguya geç
+            handler.postDelayed(() -> processNextQuery(), WAIT_BETWEEN_QUERIES);
+
+            return START_STICKY;
+        }
+
         Log.d(TAG, "Service başlatıldı");
         isRunning = true;
         handler.post(checkMessagesRunnable);
@@ -165,7 +181,6 @@ public class MessageCheckService extends Service {
                             String userPhone = query.getString("user_phone");
                             String vehicleId = query.optString("vehicle_id", smsMessage);
 
-                            // Kuyruğa ekle (eğer zaten yoksa)
                             boolean exists = false;
                             for (PendingQuery pq : queryQueue) {
                                 if (pq.queryId.equals(queryId)) {
@@ -180,7 +195,6 @@ public class MessageCheckService extends Service {
                             }
                         }
 
-                        // İşlem yoksa başlat
                         if (!isProcessingQuery && !queryQueue.isEmpty()) {
                             handler.post(() -> processNextQuery());
                         }
@@ -211,7 +225,6 @@ public class MessageCheckService extends Service {
             return;
         }
 
-        // Mevcut sorgu bilgilerini kaydet
         currentQueryId = query.queryId;
         currentUserPhone = query.userPhone;
         currentVehicleId = query.vehicleId;
@@ -222,83 +235,40 @@ public class MessageCheckService extends Service {
         Log.d(TAG, "İşleniyor: " + query.queryId + " | Plaka: " + query.vehicleId);
         updateNotification("Sorgulanıyor: " + query.vehicleId);
 
-        // 1. 5664'e SMS gönder
         SharedPreferences prefs = getSharedPreferences("sms_relay_prefs", MODE_PRIVATE);
         String targetNumber = prefs.getString("target_number", "5664");
         sendSms(targetNumber, query.smsMessage);
 
-        Log.d(TAG, "5664'e gönderildi: " + query.smsMessage + " | 20sn bekleniyor...");
+        Log.d(TAG, "5664'e gönderildi: " + query.smsMessage);
 
-        // 2. 20 saniye bekle (cevap toplama süresi)
-        handler.postDelayed(() -> {
-            checkResponseAndProceed();
-        }, WAIT_FOR_REPLY);
-
-        // 3. 60 saniye timeout
+        // Timeout kontrolü - 120 saniye
         handler.postDelayed(() -> {
             if (!responseReceived && currentQueryId != null && currentQueryId.equals(query.queryId)) {
-                Log.e(TAG, "TIMEOUT! 60 saniye içinde cevap gelmedi: " + query.queryId);
+                Log.e(TAG, "TIMEOUT! Cevap gelmedi: " + query.queryId);
                 handleTimeout();
             }
         }, TIMEOUT);
-    }
-
-    private void checkResponseAndProceed() {
-        if (responseReceived && receivedResponse != null) {
-            // Cevap geldi, kullanıcıya gönder
-            Log.d(TAG, "Cevap alındı, kullanıcıya gönderiliyor: " + currentUserPhone);
-            sendSmsToUser(currentUserPhone, receivedResponse);
-            notifyBackendSuccess();
-            updateNotification("Sonuç gönderildi: " + currentVehicleId);
-        } else {
-            Log.d(TAG, "20sn doldu, henüz cevap yok. Timeout bekleniyor...");
-        }
     }
 
     private void handleTimeout() {
         SharedPreferences prefs = getSharedPreferences("sms_relay_prefs", MODE_PRIVATE);
         String adminPhone = prefs.getString("admin_phone", "");
 
-        // Kullanıcıya hata mesajı
-        String errorMessage = "Araç sorgulama sonucu alınamadı. Lütfen daha sonra tekrar deneyiniz. Ücret iadesi için destek@hasarsorgulama.com adresine başvurabilirsiniz.";
+        String errorMessage = "Araç sorgulama sonucu alınamadı. Lütfen daha sonra tekrar deneyiniz.";
         sendSmsToUser(currentUserPhone, errorMessage);
 
-        // Admin'e bildirim
         if (!adminPhone.isEmpty()) {
-            String adminMessage = "SORGU BAŞARISIZ!\nPlaka: " + currentVehicleId + "\nTelefon: " + currentUserPhone + "\nSorgu ID: " + currentQueryId;
+            String adminMessage = "SORGU BAŞARISIZ!\nPlaka: " + currentVehicleId + "\nTelefon: " + currentUserPhone;
             sendSmsToUser(adminPhone, adminMessage);
-            Log.d(TAG, "Admin'e bildirim gönderildi: " + adminPhone);
         }
 
-        // Backend'e başarısız bildir
         notifyBackendFailed();
+        updateNotification("HATA: " + currentVehicleId);
 
-        updateNotification("HATA: " + currentVehicleId + " sonuç alınamadı");
-
-        // Temizle ve sonraki sorguya geç
         clearCurrentQuery();
+        isProcessingQuery = false;
 
-        // 10 saniye bekle ve sonraki sorguya geç
         handler.postDelayed(() -> processNextQuery(), WAIT_BETWEEN_QUERIES);
-    }
-
-    public void onResponseReceived(String response) {
-        if (currentQueryId != null && !responseReceived) {
-            responseReceived = true;
-            receivedResponse = response;
-            Log.d(TAG, "Cevap alındı: " + response.substring(0, Math.min(50, response.length())) + "...");
-
-            // Kullanıcıya gönder
-            sendSmsToUser(currentUserPhone, response);
-            notifyBackendSuccess();
-            updateNotification("Sonuç gönderildi: " + currentVehicleId);
-
-            // Temizle
-            clearCurrentQuery();
-
-            // 10 saniye bekle ve sonraki sorguya geç
-            handler.postDelayed(() -> processNextQuery(), WAIT_BETWEEN_QUERIES);
-        }
     }
 
     private void clearCurrentQuery() {
@@ -326,42 +296,13 @@ public class MessageCheckService extends Service {
 
             if (parts.size() > 1) {
                 smsManager.sendMultipartTextMessage(phoneNumber, null, parts, null, null);
-                Log.d(TAG, "Çok parçalı SMS gönderildi: " + phoneNumber);
             } else {
                 smsManager.sendTextMessage(phoneNumber, null, message, null, null);
-                Log.d(TAG, "SMS gönderildi: " + phoneNumber);
             }
+            Log.d(TAG, "SMS gönderildi: " + phoneNumber);
         } catch (Exception e) {
             Log.e(TAG, "SMS gönderilemedi: " + e.getMessage());
         }
-    }
-
-    private void notifyBackendSuccess() {
-        new Thread(() -> {
-            try {
-                if (currentBackendUrl == null || currentQueryId == null) return;
-
-                JSONObject json = new JSONObject();
-                json.put("query_id", currentQueryId);
-
-                OkHttpClient client = new OkHttpClient();
-                RequestBody body = RequestBody.create(
-                        json.toString(),
-                        MediaType.parse("application/json")
-                );
-
-                Request request = new Request.Builder()
-                        .url(currentBackendUrl + "/api/query/result-received")
-                        .post(body)
-                        .build();
-
-                Response response = client.newCall(request).execute();
-                Log.d(TAG, "Backend'e başarılı bildirildi: " + response.code());
-                response.close();
-            } catch (Exception e) {
-                Log.e(TAG, "Backend bildirimi hatası: " + e.getMessage());
-            }
-        }).start();
     }
 
     private void notifyBackendFailed() {
