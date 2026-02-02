@@ -19,8 +19,11 @@ import androidx.core.app.NotificationCompat;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.LinkedList;
+import java.util.Locale;
 import java.util.Queue;
 
 import okhttp3.MediaType;
@@ -35,12 +38,13 @@ public class MessageCheckService extends Service {
     private static final int NOTIFICATION_ID = 1;
 
     private static final int CHECK_INTERVAL = 5000;
-    private static final int WAIT_FOR_REPLY = 90000;
     private static final int WAIT_BETWEEN_QUERIES = 30000;
     private static final int TIMEOUT = 120000;
+    private static final int HOURLY_STATUS_INTERVAL = 3600000; // 1 saat
 
     private Handler handler;
     private Runnable checkMessagesRunnable;
+    private Runnable hourlyStatusRunnable;
     private boolean isRunning = false;
     public static boolean isProcessingQuery = false;
 
@@ -50,6 +54,10 @@ public class MessageCheckService extends Service {
     public static String currentBackendUrl = null;
     public static boolean responseReceived = false;
     public static String receivedResponse = null;
+
+    // İstatistikler
+    private static int successCount = 0;
+    private static int failCount = 0;
 
     private Queue<PendingQuery> queryQueue = new LinkedList<>();
 
@@ -61,6 +69,8 @@ public class MessageCheckService extends Service {
         startForeground(NOTIFICATION_ID, createNotification("Başlatılıyor..."));
 
         handler = new Handler(Looper.getMainLooper());
+
+        // Sorgu kontrol runnable
         checkMessagesRunnable = new Runnable() {
             @Override
             public void run() {
@@ -72,23 +82,40 @@ public class MessageCheckService extends Service {
                 }
             }
         };
+
+        // Saatlik durum bildirimi runnable
+        hourlyStatusRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (isRunning) {
+                    sendHourlyStatus();
+                    handler.postDelayed(this, HOURLY_STATUS_INTERVAL);
+                }
+            }
+        };
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // SmsReceiver'dan gelen "işlem tamamlandı" sinyali
         if (intent != null && "QUERY_COMPLETED".equals(intent.getAction())) {
             Log.d(TAG, "SmsReceiver'dan sinyal alındı - işlem tamamlandı");
+
+            boolean success = intent.getBooleanExtra("success", false);
+            if (success) {
+                successCount++;
+            } else {
+                failCount++;
+            }
+
             responseReceived = true;
             receivedResponse = intent.getStringExtra("response");
 
-            updateNotification("Sonuç gönderildi: " + currentVehicleId);
+            updateNotification("Son sorgu: " + (success ? "Başarılı" : "Başarısız") +
+                    " | Toplam: " + successCount + "/" + (successCount + failCount));
 
-            // Temizle
             clearCurrentQuery();
             isProcessingQuery = false;
 
-            // 30 saniye sonra sonraki sorguya geç
             handler.postDelayed(() -> processNextQuery(), WAIT_BETWEEN_QUERIES);
 
             return START_STICKY;
@@ -96,8 +123,64 @@ public class MessageCheckService extends Service {
 
         Log.d(TAG, "Service başlatıldı");
         isRunning = true;
+
+        // Sorgu kontrolünü başlat
         handler.post(checkMessagesRunnable);
+
+        // Saatlik durum bildirimini başlat (ilk bildirim 1 saat sonra)
+        handler.postDelayed(hourlyStatusRunnable, HOURLY_STATUS_INTERVAL);
+
+        // Başlangıç bildirimi gönder
+        sendStartupStatus();
+
         return START_STICKY;
+    }
+
+    private void sendStartupStatus() {
+        SharedPreferences prefs = getSharedPreferences("sms_relay_prefs", MODE_PRIVATE);
+        String adminPhone = prefs.getString("admin_phone", "");
+
+        if (!adminPhone.isEmpty()) {
+            SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault());
+            String time = sdf.format(new Date());
+
+            String statusMsg = "SMS Relay AKTIF\n" +
+                    "Baslangic: " + time + "\n" +
+                    "Durum: Calisiyor";
+
+            sendSmsToAdmin(adminPhone, statusMsg);
+            Log.d(TAG, "Başlangıç bildirimi gönderildi");
+        }
+    }
+
+    private void sendHourlyStatus() {
+        SharedPreferences prefs = getSharedPreferences("sms_relay_prefs", MODE_PRIVATE);
+        String adminPhone = prefs.getString("admin_phone", "");
+
+        if (!adminPhone.isEmpty()) {
+            SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault());
+            String time = sdf.format(new Date());
+
+            String statusMsg = "SMS Relay DURUM\n" +
+                    "Saat: " + time + "\n" +
+                    "Basarili: " + successCount + "\n" +
+                    "Basarisiz: " + failCount + "\n" +
+                    "Kuyruk: " + queryQueue.size() + "\n" +
+                    "Durum: Aktif";
+
+            sendSmsToAdmin(adminPhone, statusMsg);
+            Log.d(TAG, "Saatlik durum bildirimi gönderildi");
+        }
+    }
+
+    private void sendSmsToAdmin(String phoneNumber, String message) {
+        try {
+            SmsManager smsManager = SmsManager.getDefault();
+            smsManager.sendTextMessage(phoneNumber, null, message, null, null);
+            Log.d(TAG, "Admin SMS gönderildi: " + phoneNumber);
+        } catch (Exception e) {
+            Log.e(TAG, "Admin SMS gönderilemedi: " + e.getMessage());
+        }
     }
 
     @Override
@@ -106,6 +189,21 @@ public class MessageCheckService extends Service {
         Log.d(TAG, "Service durduruluyor");
         isRunning = false;
         handler.removeCallbacksAndMessages(null);
+
+        // Kapanış bildirimi
+        SharedPreferences prefs = getSharedPreferences("sms_relay_prefs", MODE_PRIVATE);
+        String adminPhone = prefs.getString("admin_phone", "");
+        if (!adminPhone.isEmpty()) {
+            SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault());
+            String time = sdf.format(new Date());
+
+            String statusMsg = "SMS Relay KAPANDI\n" +
+                    "Saat: " + time + "\n" +
+                    "Toplam Basarili: " + successCount + "\n" +
+                    "Toplam Basarisiz: " + failCount;
+
+            sendSmsToAdmin(adminPhone, statusMsg);
+        }
     }
 
     @Override
@@ -135,10 +233,11 @@ public class MessageCheckService extends Service {
         );
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Araç Sorgulama Aktif")
+                .setContentTitle("SMS Relay Aktif")
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.ic_dialog_email)
                 .setContentIntent(pendingIntent)
+                .setOngoing(true)
                 .build();
     }
 
@@ -212,7 +311,7 @@ public class MessageCheckService extends Service {
     private void processNextQuery() {
         if (queryQueue.isEmpty()) {
             isProcessingQuery = false;
-            updateNotification("Bekleniyor...");
+            updateNotification("Bekleniyor... | Başarılı: " + successCount + " Başarısız: " + failCount);
             Log.d(TAG, "Kuyruk boş");
             return;
         }
@@ -241,7 +340,6 @@ public class MessageCheckService extends Service {
 
         Log.d(TAG, "5664'e gönderildi: " + query.smsMessage);
 
-        // Timeout kontrolü - 120 saniye
         handler.postDelayed(() -> {
             if (!responseReceived && currentQueryId != null && currentQueryId.equals(query.queryId)) {
                 Log.e(TAG, "TIMEOUT! Cevap gelmedi: " + query.queryId);
@@ -254,16 +352,18 @@ public class MessageCheckService extends Service {
         SharedPreferences prefs = getSharedPreferences("sms_relay_prefs", MODE_PRIVATE);
         String adminPhone = prefs.getString("admin_phone", "");
 
-        String errorMessage = "Araç sorgulama sonucu alınamadı. Lütfen daha sonra tekrar deneyiniz.";
+        String errorMessage = "Arac sorgulama sonucu alinamadi. Lutfen daha sonra tekrar deneyiniz.";
         sendSmsToUser(currentUserPhone, errorMessage);
 
         if (!adminPhone.isEmpty()) {
-            String adminMessage = "SORGU BAŞARISIZ!\nPlaka: " + currentVehicleId + "\nTelefon: " + currentUserPhone;
+            String adminMessage = "SORGU BASARISIZ!\nPlaka: " + currentVehicleId + "\nTelefon: " + currentUserPhone;
             sendSmsToUser(adminPhone, adminMessage);
         }
 
         notifyBackendFailed();
-        updateNotification("HATA: " + currentVehicleId);
+
+        failCount++;
+        updateNotification("HATA: " + currentVehicleId + " | Başarılı: " + successCount + " Başarısız: " + failCount);
 
         clearCurrentQuery();
         isProcessingQuery = false;

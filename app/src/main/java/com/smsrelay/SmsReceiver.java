@@ -27,8 +27,8 @@ import okhttp3.Response;
 
 public class SmsReceiver extends BroadcastReceiver {
     private static final String TAG = "SmsReceiver";
-    private static final int MESSAGE_TIMEOUT = 600000; // 10 dakika - mesajlar arası timeout
-    private static final int COLLECT_DELAY = 15000;    // 15 saniye - SMS parçalarını toplama
+    private static final int MESSAGE_TIMEOUT = 600000; // 10 dakika
+    private static final int COLLECT_DELAY = 15000;    // 15 saniye
 
     private static Handler handler = new Handler(Looper.getMainLooper());
     private static Runnable timeoutRunnable = null;
@@ -38,12 +38,21 @@ public class SmsReceiver extends BroadcastReceiver {
     private static int expectedMessageCount = 0;
     private static Map<Integer, String> receivedMessages = new HashMap<>();
 
-    // SMS parçalarını toplama
     private static StringBuilder currentMessageBuffer = new StringBuilder();
     private static int lastDetectedMessageNum = 0;
     private static int lastDetectedTotalNum = 0;
 
     private static final Pattern MESSAGE_PATTERN = Pattern.compile("Mesaj\\s*\\((\\d+)/(\\d+)\\)");
+
+    // Değiştirilecek metin pattern'i
+    private static final Pattern REPLACE_PATTERN = Pattern.compile(
+            "Detayli yasal bilgi icin https://sbm\\.org\\.tr/yu58.*?B002",
+            Pattern.DOTALL
+    );
+
+    // Yeni reklam metni
+    private static final String REPLACEMENT_TEXT =
+            "Aracinizla ilgili tum hasar, kaza ve kayit sorgulamalarinizi hizli, guvenli ve kolay bir sekilde gerceklestirmek icin kazasorgulama.com.tr adresini ziyaret edebilirsiniz.";
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -73,7 +82,7 @@ public class SmsReceiver extends BroadcastReceiver {
                     if (sender.contains("5664") || sender.contains("TRAMER") ||
                             normalizePhoneNumber(sender).equals(normalizePhoneNumber(targetNumber))) {
 
-                        Log.d(TAG, "5664'ten parça geldi: " + message.substring(0, Math.min(50, message.length())) + "...");
+                        Log.d(TAG, "5664'ten parça geldi");
 
                         if (MessageCheckService.currentQueryId != null) {
                             collectSmsPart(context, message);
@@ -85,50 +94,41 @@ public class SmsReceiver extends BroadcastReceiver {
     }
 
     private void collectSmsPart(Context context, String part) {
-        // "Mesaj (X/Y)" pattern'i var mı kontrol et
         Matcher matcher = MESSAGE_PATTERN.matcher(part);
 
         if (matcher.find()) {
-            // Yeni bir ana mesaj başlıyor
             int msgNum = Integer.parseInt(matcher.group(1));
             int totalNum = Integer.parseInt(matcher.group(2));
 
             Log.d(TAG, "Yeni mesaj başlığı bulundu: " + msgNum + "/" + totalNum);
 
-            // Önceki buffer'da veri varsa kaydet
             if (currentMessageBuffer.length() > 0 && lastDetectedMessageNum > 0) {
                 saveBufferedMessage();
             }
 
-            // Yeni mesaj için buffer başlat
             currentMessageBuffer = new StringBuilder();
             currentMessageBuffer.append(part);
             lastDetectedMessageNum = msgNum;
             lastDetectedTotalNum = totalNum;
 
-            // Toplam mesaj sayısını güncelle
             if (totalNum > expectedMessageCount) {
                 expectedMessageCount = totalNum;
             }
         } else {
-            // Bu bir devam parçası, buffer'a ekle
             if (currentMessageBuffer.length() > 0) {
                 currentMessageBuffer.append(" ").append(part);
-                Log.d(TAG, "Parça buffer'a eklendi. Buffer uzunluk: " + currentMessageBuffer.length());
+                Log.d(TAG, "Parça buffer'a eklendi");
             }
         }
 
-        // Collect timer'ı sıfırla (her parçada)
         resetCollectTimer(context.getApplicationContext());
     }
 
     private void resetCollectTimer(Context context) {
-        // Önceki collect timer'ı iptal et
         if (collectRunnable != null) {
             handler.removeCallbacks(collectRunnable);
         }
 
-        // 15 saniye sonra buffer'ı işle
         collectRunnable = () -> {
             Log.d(TAG, "15 saniye doldu, buffer işleniyor...");
             processCollectedBuffer(context);
@@ -138,17 +138,14 @@ public class SmsReceiver extends BroadcastReceiver {
     }
 
     private void processCollectedBuffer(Context context) {
-        // Son buffer'ı kaydet
         if (currentMessageBuffer.length() > 0 && lastDetectedMessageNum > 0) {
             saveBufferedMessage();
         }
 
         Log.d(TAG, "Toplanan mesaj sayısı: " + receivedMessages.size() + "/" + expectedMessageCount);
 
-        // Ana timeout timer'ı başlat/sıfırla
         resetMainTimer(context);
 
-        // Tüm mesajlar geldi mi kontrol et
         if (expectedMessageCount > 0 && receivedMessages.size() >= expectedMessageCount) {
             Log.d(TAG, "TÜM MESAJLAR TOPLANDI!");
             cancelAllTimers();
@@ -159,31 +156,26 @@ public class SmsReceiver extends BroadcastReceiver {
     private void saveBufferedMessage() {
         String fullMessage = currentMessageBuffer.toString().trim();
 
-        // Duplicate kontrolü
         if (!receivedMessages.containsKey(lastDetectedMessageNum)) {
             receivedMessages.put(lastDetectedMessageNum, fullMessage);
-            Log.d(TAG, "Mesaj " + lastDetectedMessageNum + " kaydedildi. Uzunluk: " + fullMessage.length());
-        } else {
-            Log.d(TAG, "Mesaj " + lastDetectedMessageNum + " zaten var, atlanıyor");
+            Log.d(TAG, "Mesaj " + lastDetectedMessageNum + " kaydedildi");
         }
 
-        // Buffer'ı temizle
         currentMessageBuffer = new StringBuilder();
     }
 
     private void resetMainTimer(Context context) {
-        // Önceki timer'ı iptal et
         if (timeoutRunnable != null) {
             handler.removeCallbacks(timeoutRunnable);
         }
 
         waitingForMessages = true;
 
-        Log.d(TAG, "Ana timer sıfırlandı. 10dk bekleniyor. Alınan: " + receivedMessages.size() + "/" + expectedMessageCount);
+        Log.d(TAG, "Ana timer sıfırlandı. 10dk bekleniyor");
 
         timeoutRunnable = () -> {
             int missing = expectedMessageCount - receivedMessages.size();
-            Log.e(TAG, "TIMEOUT! 10 dakika doldu. " + missing + " mesaj eksik");
+            Log.e(TAG, "TIMEOUT! " + missing + " mesaj eksik");
             handleTimeout(context);
         };
 
@@ -201,6 +193,17 @@ public class SmsReceiver extends BroadcastReceiver {
         }
     }
 
+    // Mesajdaki yasal uyarı kısmını reklam metniyle değiştir
+    private String replaceFooterText(String message) {
+        Matcher matcher = REPLACE_PATTERN.matcher(message);
+        if (matcher.find()) {
+            String modified = matcher.replaceAll(REPLACEMENT_TEXT);
+            Log.d(TAG, "Mesaj footer'ı değiştirildi");
+            return modified;
+        }
+        return message;
+    }
+
     private void sendCombinedMessage(Context context, boolean isSuccess) {
         String userPhone = MessageCheckService.currentUserPhone;
         String queryId = MessageCheckService.currentQueryId;
@@ -208,7 +211,6 @@ public class SmsReceiver extends BroadcastReceiver {
         String vehicleId = MessageCheckService.currentVehicleId;
 
         if (isSuccess && !receivedMessages.isEmpty()) {
-            // Mesajları sırayla birleştir
             StringBuilder combined = new StringBuilder();
 
             for (int i = 1; i <= expectedMessageCount; i++) {
@@ -220,22 +222,21 @@ public class SmsReceiver extends BroadcastReceiver {
                 }
             }
 
-            String finalMessage = combined.toString();
+            // Mesajı değiştir (reklam metni ekle)
+            String finalMessage = replaceFooterText(combined.toString());
             Log.d(TAG, "Birleştirilmiş mesaj hazır. Uzunluk: " + finalMessage.length());
 
-            // Kullanıcıya gönder
             if (userPhone != null && !userPhone.isEmpty()) {
                 sendSmsToUser(userPhone, finalMessage);
                 Log.d(TAG, "Mesaj kullanıcıya gönderildi: " + userPhone);
             }
 
-            // Backend'e başarılı bildir
             notifyBackendSuccess(backendUrl, queryId);
 
-            // Service'e bildir
             Intent serviceIntent = new Intent(context, MessageCheckService.class);
             serviceIntent.setAction("QUERY_COMPLETED");
             serviceIntent.putExtra("success", true);
+            serviceIntent.putExtra("vehicle_id", vehicleId);
             context.startService(serviceIntent);
 
             Log.d(TAG, "Sorgu BAŞARILI! Plaka: " + vehicleId);
@@ -253,7 +254,6 @@ public class SmsReceiver extends BroadcastReceiver {
         SharedPreferences prefs = context.getSharedPreferences("sms_relay_prefs", Context.MODE_PRIVATE);
         String adminPhone = prefs.getString("admin_phone", "");
 
-        // Gelen mesajları yine de gönder
         if (!receivedMessages.isEmpty()) {
             StringBuilder combined = new StringBuilder();
             for (int i = 1; i <= Math.max(expectedMessageCount, receivedMessages.size() + 1); i++) {
@@ -266,12 +266,13 @@ public class SmsReceiver extends BroadcastReceiver {
             }
 
             if (userPhone != null && !userPhone.isEmpty() && combined.length() > 0) {
-                sendSmsToUser(userPhone, combined.toString());
+                // Kısmi mesajı da değiştir
+                String modifiedMessage = replaceFooterText(combined.toString());
+                sendSmsToUser(userPhone, modifiedMessage);
                 Log.d(TAG, "Kısmi mesaj kullanıcıya gönderildi");
             }
         }
 
-        // Admin'e hata bildirimi
         if (!adminPhone.isEmpty()) {
             StringBuilder adminMsg = new StringBuilder();
             adminMsg.append("HATA!\n");
@@ -280,10 +281,8 @@ public class SmsReceiver extends BroadcastReceiver {
             adminMsg.append("Alinan: ").append(receivedMessages.size()).append("/").append(expectedMessageCount);
 
             sendSmsToUser(adminPhone, adminMsg.toString());
-            Log.d(TAG, "Admin'e timeout bildirimi gönderildi");
         }
 
-        // Kullanıcıya bilgi
         if (userPhone != null && !userPhone.isEmpty()) {
             String infoMsg = "Not: Sorgulama sonucu eksik olabilir. Detay icin destek hattini arayiniz.";
             sendSmsToUser(userPhone, infoMsg);
@@ -294,6 +293,7 @@ public class SmsReceiver extends BroadcastReceiver {
         Intent serviceIntent = new Intent(context, MessageCheckService.class);
         serviceIntent.setAction("QUERY_COMPLETED");
         serviceIntent.putExtra("success", false);
+        serviceIntent.putExtra("vehicle_id", vehicleId);
         context.startService(serviceIntent);
 
         resetState();
@@ -307,7 +307,7 @@ public class SmsReceiver extends BroadcastReceiver {
         lastDetectedTotalNum = 0;
         receivedMessages.clear();
         currentMessageBuffer = new StringBuilder();
-        Log.d(TAG, "State sıfırlandı, sonraki sorguya hazır");
+        Log.d(TAG, "State sıfırlandı");
     }
 
     private void sendSmsToUser(String phoneNumber, String message) {
